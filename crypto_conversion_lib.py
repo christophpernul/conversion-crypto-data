@@ -88,13 +88,14 @@ class Kraken(Exchange):
                                                   "fee": "fee"
                                                   }
                                          )
+        withdrawals["amount_spent"] *= -1 ## Should always be positive values
         # Full outer join of deposits and withdrawals to get a single table in the same schema as trades table
         self.deposits = self.deposits.merge(withdrawals, how="outer")
         self.deposits.rename(columns={"refid": "ordertxid"}, inplace=True)
         self.deposits["fee"] *= -1
         self.deposits["date"] = pd.to_datetime(self.deposits["date"], format='%Y-%m-%d %H:%M:%S')
         self.deposits["date_string"] = self.deposits["date"].dt.strftime('%Y-%m-%d')
-        self.deposits["fee_currency"] = self.deposits["currency_spent"]
+        # self.deposits["fee_currency"] = self.deposits["currency_spent"]
 
 
     def convert_trades(self):
@@ -108,17 +109,17 @@ class Kraken(Exchange):
         """
         self.trades_input = self.trades_input[["txid", "ordertxid", "pair", "time", "type",
                                                "ordertype", "price", "cost", "fee", "vol", "margin"]]
-        self.trades_input["fee"] *= -1
+        # self.trades_input["fee"] *= -1
 
         # Preprocessing of BUY entries
         buys = self.trades_input[self.trades_input["type"] == "buy"].copy()
         buys["currency_received"] = buys["pair"].apply(get_left_part_of_currency_pair)
         buys["currency_spent"] = buys["pair"].apply(get_right_part_of_currency_pair)
-        buys.drop("pair", axis=1, inplace=True)
+        buys.drop(["fee", "pair"], axis=1, inplace=True)
         buys = buys.rename(columns={"time": "date",
                                     "price": "conversion_rate_received_spent",
                                     "cost": "amount_spent",
-                                    "fee": "fee",
+                                    # "fee": "fee",
                                     "vol": "amount_received"
                                     }
                            )
@@ -127,11 +128,11 @@ class Kraken(Exchange):
         sells = self.trades_input[self.trades_input["type"] == "sell"].copy()
         sells["currency_spent"] = sells["pair"].apply(get_left_part_of_currency_pair)
         sells["currency_received"] = sells["pair"].apply(get_right_part_of_currency_pair)
-        sells.drop("pair", axis=1, inplace=True)
+        sells.drop(["fee", "pair"], axis=1, inplace=True)
         sells = sells.rename(columns={"time": "date",
                                       "price": "conversion_rate_received_spent",
                                       "cost": "amount_received",
-                                      "fee": "fee",
+                                      # "fee": "fee",
                                       "vol": "amount_spent"
                                       }
                              )
@@ -142,7 +143,11 @@ class Kraken(Exchange):
         self.trades = pd.concat([buys, sells], ignore_index=True)
         self.trades["date"] = pd.to_datetime(self.trades["date"], format='%Y-%m-%d %H:%M:%S')
         self.trades["date_string"] = self.trades["date"].dt.strftime('%Y-%m-%d')
-        self.trades["fee_currency"] = self.trades["currency_spent"]
+        # self.trades["fee_currency"] = self.trades["currency_spent"]
+
+        fees = self.deposits_input[self.deposits_input["type"] == "trade"].dropna().copy()[["refid", "fee_currency", "fee"]]
+        self.trades = self.trades.merge(fees, how="left", left_on="txid", right_on="refid").drop("refid", axis=1)
+
 
 class Kucoin(Exchange):
     def __init__(self):
@@ -189,7 +194,7 @@ class Kucoin(Exchange):
                                     "dealValue": "amount_spent",
                                     "amount": "amount_received",
                                     "dealPrice": "conversion_rate_received_spent",
-                                    "oid": "trxid",
+                                    "oid": "txid",
                                     "direction": "type"
                                     }).drop("symbol", axis=1)
         buys["type"] = buys["type"].apply(lambda string: string.lower())
@@ -205,7 +210,7 @@ class Kucoin(Exchange):
                                       "dealValue": "amount_received",
                                       "amount": "amount_spent",
                                       "dealPrice": "conversion_rate_received_spent",
-                                      "oid": "trxid",
+                                      "oid": "txid",
                                       "direction": "type"
                                       }).drop("symbol", axis=1)
         sells["conversion_rate_received_spent"] = 1. / sells["conversion_rate_received_spent"]
@@ -257,6 +262,7 @@ class Binance(Exchange):
         return ((deposits_init, trades_init))
 
     def convert_deposits(self):
+        # TODO: Check for withdrawals!
         self.deposits = self.deposits_input.rename(columns={"Date(UTC)": "date",
                                                                   "Coin": "currency_received",
                                                                   "Amount": "amount_received",

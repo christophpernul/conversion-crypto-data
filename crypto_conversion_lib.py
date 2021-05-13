@@ -2,10 +2,13 @@ import os
 import numpy as np
 import pandas as pd
 
+
+
 class Exchange():
     def __init__(self):
         self.base_path = "/home/chris/Dropbox/Finance/data/crypto"
         self.raw_path = os.path.join(self.base_path, "raw")
+        self.export_path = os.path.join(self.base_path, "exported")
         self.deposits = None
         self.trades = None
         self.trade_history = None
@@ -13,6 +16,39 @@ class Exchange():
         return(sum(self.deposits))
     def combine_deposits_trades(self):
         self.trade_history = pd.concat([self.deposits, self.trades], ignore_index=True)
+    def save_trade_history(self, filename):
+        assert type(self.trade_history) != None, "Combine deposits and trades first!"
+        self.trade_history.to_csv(os.path.join(self.export_path, filename), sep=",")
+
+def get_left_part_of_currency_pair(pair):
+    """In case of Kraken split the currency pair correctly"""
+    if pair[:4] in ["QTUM", "IOTA"]:
+        # In case the left pair is QTUM, do not split in the middle
+        left = pair[:4]
+    else:
+        # Split the pair in the middle of the string
+        left = pair[:len(pair) // 2]
+        if len(left) == 4 and left not in ["QTUM", "IOTA"]:
+            # In case the currency is 4-digits long and is not QTUM drop the first X (no information)
+            # Examples: XXRP -> XRP, XETH -> ETH
+            # Exception for QTUM and IOTA is done for binance: there the dropping of the first letter is not needed
+            left = left[1:]
+    return(left)
+
+def get_right_part_of_currency_pair(pair):
+    """In case of Kraken split the currency pair correctly"""
+    if pair[:4] in ["QTUM", "IOTA"]:
+        # In case the left pair is QTUM, do not split in the middle
+        right = pair[4:]
+    else:
+        # Split the pair in the middle of the string
+        right = pair[len(pair) // 2:]
+        if len(right) == 4 and right not in ["QTUM", "IOTA"]:
+            # In case the currency is 4-digits long and is not QTUM drop the first X (no information)
+            # Examples: XXRP -> XRP, XETH -> ETH
+            # Exception for QTUM and IOTA is done for binance: there the dropping of the first letter is not needed
+            right = right[1:]
+    return(right)
 
 class Kraken(Exchange):
     def __init__(self):
@@ -47,7 +83,7 @@ class Kraken(Exchange):
         self.deposits["fee"] *= -1
         self.deposits["date"] = pd.to_datetime(self.deposits["date"], format='%Y-%m-%d %H:%M:%S')
         self.deposits["date_string"] = self.deposits["date"].dt.strftime('%Y-%m-%d')
-        self.deposits["fee_currency"] = np.nan
+        self.deposits["fee_currency"] = self.deposits["currency_spent"]
 
 
     def convert_trades(self):
@@ -65,8 +101,8 @@ class Kraken(Exchange):
 
         # Preprocessing of BUY entries
         buys = self.trades_input[self.trades_input["type"] == "buy"].copy()
-        buys["currency_received"] = buys["pair"].apply(lambda pair: pair[:len(pair) // 2][1:])
-        buys["currency_spent"] = buys["pair"].apply(lambda pair: pair[len(pair) // 2:][1:])
+        buys["currency_received"] = buys["pair"].apply(get_left_part_of_currency_pair)
+        buys["currency_spent"] = buys["pair"].apply(get_right_part_of_currency_pair)
         buys.drop("pair", axis=1, inplace=True)
         buys = buys.rename(columns={"time": "date",
                                     "price": "conversion_rate_received_spent",
@@ -78,8 +114,8 @@ class Kraken(Exchange):
 
         # # Preprocessing of SELL entries
         sells = self.trades_input[self.trades_input["type"] == "sell"].copy()
-        sells["currency_spent"] = sells["pair"].apply(lambda pair: pair[:len(pair) // 2][1:])
-        sells["currency_received"] = sells["pair"].apply(lambda pair: pair[len(pair) // 2:][1:])
+        sells["currency_spent"] = sells["pair"].apply(get_left_part_of_currency_pair)
+        sells["currency_received"] = sells["pair"].apply(get_right_part_of_currency_pair)
         sells.drop("pair", axis=1, inplace=True)
         sells = sells.rename(columns={"time": "date",
                                       "price": "conversion_rate_received_spent",
@@ -234,8 +270,8 @@ class Binance(Exchange):
         :return:
         """
         buys = self.trades_input[self.trades_input["Side"] == "BUY"].copy()
-        buys["currency_received"] = buys["Pair"].apply(lambda pair: pair[:len(pair) // 2])
-        buys["currency_spent"] = buys["Pair"].apply(lambda pair: pair[len(pair) // 2:])
+        buys["currency_received"] = buys["Pair"].apply(get_left_part_of_currency_pair)
+        buys["currency_spent"] = buys["Pair"].apply(get_right_part_of_currency_pair)
         buys = buys.rename(columns={"Date(UTC)": "date",
                                     "Side": "type",
                                     "Amount": "amount_spent",
@@ -256,8 +292,8 @@ class Binance(Exchange):
 
 
         sells = self.trades_input[self.trades_input["Side"] == "SELL"].copy()
-        sells["currency_spent"] = sells["Pair"].apply(lambda pair: pair[:len(pair) // 2])
-        sells["currency_received"] = sells["Pair"].apply(lambda pair: pair[len(pair) // 2:])
+        sells["currency_spent"] = sells["Pair"].apply(get_left_part_of_currency_pair)
+        sells["currency_received"] = sells["Pair"].apply(get_right_part_of_currency_pair)
         sells = sells.rename(columns={"Date(UTC)": "date",
                                       "Side": "type",
                                       "Amount": "amount_received",

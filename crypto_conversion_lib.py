@@ -50,14 +50,25 @@ def get_right_part_of_currency_pair(pair):
             right = right[1:]
     return(right)
 
+def combine_file_content(raw_path, file_list):
+    for idx, fname in enumerate(file_list):
+        if idx == 0:
+            df_all = pd.read_csv(os.path.join(raw_path, fname))
+        else:
+            df = pd.read_csv(os.path.join(raw_path, fname))
+            df_all = pd.concat([df_all, df], ignore_index=True)
+    return(df_all)
+
 class Kraken(Exchange):
     def __init__(self):
         Exchange.__init__(self)
         # Load ledger and trades data for kraken.com
-        filename_ledger = "kraken_ledgers_2016-04-01_2021-04-18.csv"
-        filename_trades = "kraken_trades_2016-04-01_2021-04-18.csv"
-        self.deposits_input = pd.read_csv(os.path.join(self.raw_path, filename_ledger))
-        self.trades_input = pd.read_csv(os.path.join(self.raw_path, filename_trades))
+        file_list = os.listdir(self.raw_path)
+        file_list_deposits = list(filter(lambda fname: "kraken_ledgers_" in fname, file_list))
+        file_list_trades = list(filter(lambda fname: "kraken_trades_" in fname, file_list))
+
+        self.deposits_input = combine_file_content(self.raw_path, file_list_deposits)
+        self.trades_input = combine_file_content(self.raw_path, file_list_trades)
     def convert_deposits(self):
         self.deposits_input.drop(["subtype", "aclass"], axis=1, inplace=True)
         # Drop first letter of shortcut of currency: X for crypto, Z for cash
@@ -137,10 +148,12 @@ class Kucoin(Exchange):
     def __init__(self):
         Exchange.__init__(self)
         # Load ledger and trades data for kraken.com
-        filename_ledger = "kucoin_deposits_2016-04-01_2021-04-18.csv"
-        filename_trades = "kucoin_trades_2016-04-01_2021-04-18.csv"
-        self.deposits_input = pd.read_csv(os.path.join(self.raw_path, filename_ledger))
-        self.trades_input = pd.read_csv(os.path.join(self.raw_path, filename_trades))
+        file_list = os.listdir(self.raw_path)
+        file_list_deposits = list(filter(lambda fname: "kucoin_deposits_" in fname, file_list))
+        file_list_trades = list(filter(lambda fname: "kucoin_trades_" in fname, file_list))
+
+        self.deposits_input = combine_file_content(self.raw_path, file_list_deposits)
+        self.trades_input = combine_file_content(self.raw_path, file_list_trades)
     def convert_deposits(self):
         """
         TODO: Check in future if there is additional logic for withdrawals!

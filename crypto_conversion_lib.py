@@ -20,6 +20,14 @@ class Exchange():
         assert type(self.trade_history) != None, "Combine deposits and trades first!"
         self.trade_history.to_csv(os.path.join(self.export_path, filename), sep=",")
 
+def drop_first_letter_currency(currency):
+    if len(currency) == 4 and currency not in ["QTUM", "IOTA"]:
+        # In case the currency is 4-digits long and is not QTUM drop the first X (no information)
+        # Examples: XXRP -> XRP, XETH -> ETH
+        # Exception for QTUM and IOTA is done for binance: there the dropping of the first letter is not needed
+        currency = currency[1:]
+    return(currency)
+
 def get_left_part_of_currency_pair(pair):
     """In case of Kraken split the currency pair correctly"""
     if pair[:4] in ["QTUM", "IOTA"]:
@@ -28,11 +36,7 @@ def get_left_part_of_currency_pair(pair):
     else:
         # Split the pair in the middle of the string
         left = pair[:len(pair) // 2]
-        if len(left) == 4 and left not in ["QTUM", "IOTA"]:
-            # In case the currency is 4-digits long and is not QTUM drop the first X (no information)
-            # Examples: XXRP -> XRP, XETH -> ETH
-            # Exception for QTUM and IOTA is done for binance: there the dropping of the first letter is not needed
-            left = left[1:]
+        left = drop_first_letter_currency(left)
     return(left)
 
 def get_right_part_of_currency_pair(pair):
@@ -43,11 +47,7 @@ def get_right_part_of_currency_pair(pair):
     else:
         # Split the pair in the middle of the string
         right = pair[len(pair) // 2:]
-        if len(right) == 4 and right not in ["QTUM", "IOTA"]:
-            # In case the currency is 4-digits long and is not QTUM drop the first X (no information)
-            # Examples: XXRP -> XRP, XETH -> ETH
-            # Exception for QTUM and IOTA is done for binance: there the dropping of the first letter is not needed
-            right = right[1:]
+        right = drop_first_letter_currency(right)
     return(right)
 
 def combine_file_content(raw_path, file_list):
@@ -72,7 +72,7 @@ class Kraken(Exchange):
     def convert_deposits(self):
         self.deposits_input.drop(["subtype", "aclass"], axis=1, inplace=True)
         # Drop first letter of shortcut of currency: X for crypto, Z for cash
-        self.deposits_input["asset"] = self.deposits_input["asset"].apply(lambda shortcut: shortcut[1:])
+        self.deposits_input["asset"] = self.deposits_input["asset"].apply(drop_first_letter_currency)
 
         self.deposits = self.deposits_input[self.deposits_input["type"] == "deposit"].dropna().copy()
         self.deposits = self.deposits.rename(columns={"time": "date",
@@ -107,19 +107,32 @@ class Kraken(Exchange):
         Be aware that prices are only up to 6 significant digits!
         :return:
         """
-        self.trades_input = self.trades_input[["txid", "ordertxid", "pair", "time", "type",
+        self.trades_input["ledgers"] = self.trades_input["ledgers"].apply(lambda x: x.split(","))
+        self.trades_input = self.trades_input.explode("ledgers")
+        self.trades_input = self.trades_input[["txid", "ordertxid", "pair", "time", "type", "ledgers",
                                                "ordertype", "price", "cost", "fee", "vol", "margin"]]
-        # self.trades_input["fee"] *= -1
+        self.trades_input = self.trades_input.merge(self.deposits_input, how="outer",
+                                                            left_on=["txid", "ledgers"],
+                                                            right_on=["refid", "txid"],
+                                                            suffixes=["", "_ledger"]
+                                       ).dropna()
+        # Here we join the fees with manually curated fee currencies from the ledger file
+        # All rows are duplicated (one line for the currency spent/received) and the line with the wrong fee is dropped
+
+        self.trades_input = self.trades_input[["txid", "ordertxid", "pair", "time", "type",
+                                                "ordertype", "price", "cost", "fee_ledger",
+                                                "vol", "margin", "fee_currency"]]
+        self.trades_input["fee_ledger"] *= -1
 
         # Preprocessing of BUY entries
         buys = self.trades_input[self.trades_input["type"] == "buy"].copy()
         buys["currency_received"] = buys["pair"].apply(get_left_part_of_currency_pair)
         buys["currency_spent"] = buys["pair"].apply(get_right_part_of_currency_pair)
-        buys.drop(["fee", "pair"], axis=1, inplace=True)
+        buys.drop("pair", axis=1, inplace=True)
         buys = buys.rename(columns={"time": "date",
                                     "price": "conversion_rate_received_spent",
                                     "cost": "amount_spent",
-                                    # "fee": "fee",
+                                    "fee_ledger": "fee",
                                     "vol": "amount_received"
                                     }
                            )
@@ -128,11 +141,11 @@ class Kraken(Exchange):
         sells = self.trades_input[self.trades_input["type"] == "sell"].copy()
         sells["currency_spent"] = sells["pair"].apply(get_left_part_of_currency_pair)
         sells["currency_received"] = sells["pair"].apply(get_right_part_of_currency_pair)
-        sells.drop(["fee", "pair"], axis=1, inplace=True)
+        sells.drop("pair", axis=1, inplace=True)
         sells = sells.rename(columns={"time": "date",
                                       "price": "conversion_rate_received_spent",
                                       "cost": "amount_received",
-                                      # "fee": "fee",
+                                      "fee_ledger": "fee",
                                       "vol": "amount_spent"
                                       }
                              )
@@ -143,10 +156,7 @@ class Kraken(Exchange):
         self.trades = pd.concat([buys, sells], ignore_index=True)
         self.trades["date"] = pd.to_datetime(self.trades["date"], format='%Y-%m-%d %H:%M:%S')
         self.trades["date_string"] = self.trades["date"].dt.strftime('%Y-%m-%d')
-        # self.trades["fee_currency"] = self.trades["currency_spent"]
 
-        fees = self.deposits_input[self.deposits_input["type"] == "trade"].dropna().copy()[["refid", "fee_currency", "fee"]]
-        self.trades = self.trades.merge(fees, how="left", left_on="txid", right_on="refid").drop("refid", axis=1)
 
 
 class Kucoin(Exchange):

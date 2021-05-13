@@ -54,8 +54,8 @@ class Kraken(Exchange):
     def __init__(self):
         Exchange.__init__(self)
         # Load ledger and trades data for kraken.com
-        filename_ledger = "kraken_ledgers.csv"
-        filename_trades = "kraken_trades.csv"
+        filename_ledger = "kraken_ledgers_2016-04-01_2021-04-18.csv"
+        filename_trades = "kraken_trades_2016-04-01_2021-04-18.csv"
         self.deposits_input = pd.read_csv(os.path.join(self.raw_path, filename_ledger))
         self.trades_input = pd.read_csv(os.path.join(self.raw_path, filename_trades))
     def convert_deposits(self):
@@ -137,8 +137,8 @@ class Kucoin(Exchange):
     def __init__(self):
         Exchange.__init__(self)
         # Load ledger and trades data for kraken.com
-        filename_ledger = "kucoin_deposits.csv"
-        filename_trades = "kucoin_trades.csv"
+        filename_ledger = "kucoin_deposits_2016-04-01_2021-04-18.csv"
+        filename_trades = "kucoin_trades_2016-04-01_2021-04-18.csv"
         self.deposits_input = pd.read_csv(os.path.join(self.raw_path, filename_ledger))
         self.trades_input = pd.read_csv(os.path.join(self.raw_path, filename_trades))
     def convert_deposits(self):

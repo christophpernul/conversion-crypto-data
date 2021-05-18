@@ -70,92 +70,72 @@ class Kraken(Exchange):
         self.deposits_input = combine_file_content(self.raw_path, file_list_deposits)
         self.trades_input = combine_file_content(self.raw_path, file_list_trades)
     def convert_deposits(self):
-        self.deposits_input.drop(["subtype", "aclass"], axis=1, inplace=True)
-        # Drop first letter of shortcut of currency: X for crypto, Z for cash
-        self.deposits_input["asset"] = self.deposits_input["asset"].apply(drop_first_letter_currency)
+        self.deposits = self.deposits_input[self.deposits_input["type"] != "trade"].dropna().copy()
 
-        self.deposits = self.deposits_input[self.deposits_input["type"] == "deposit"].dropna().copy()
+        self.deposits.drop(["subtype", "aclass", "balance"], axis=1, inplace=True)
+        self.deposits["asset"] = self.deposits["asset"].apply(drop_first_letter_currency)
+
         self.deposits = self.deposits.rename(columns={"time": "date",
-                                                        "asset": "currency_received",
-                                                        "amount": "amount_received",
-                                                        "fee": "fee"
+                                                      "refid": "ordertxid",
+                                                      "asset": "currency"
                                                       }
                                              )
-        withdrawals = self.deposits_input[self.deposits_input["type"] == "withdrawal"].dropna().copy()
-        withdrawals = withdrawals.rename(columns={"time": "date",
-                                                  "asset": "currency_spent",
-                                                  "amount": "amount_spent",
-                                                  "fee": "fee"
-                                                  }
-                                         )
-        withdrawals["amount_spent"] *= -1 ## Should always be positive values
-        # Full outer join of deposits and withdrawals to get a single table in the same schema as trades table
-        self.deposits = self.deposits.merge(withdrawals, how="outer")
-        self.deposits.rename(columns={"refid": "ordertxid"}, inplace=True)
+        self.deposits["conversion_rate_received_spent"] = np.nan
+        self.deposits["margin"] = np.nan
+        self.deposits["ordertype"] = np.nan
         self.deposits["fee"] *= -1
-        self.deposits["date"] = pd.to_datetime(self.deposits["date"], format='%Y-%m-%d %H:%M:%S')
-        self.deposits["date_string"] = self.deposits["date"].dt.strftime('%Y-%m-%d')
-        # self.deposits["fee_currency"] = self.deposits["currency_spent"]
 
 
     def convert_trades(self):
         """
-        BUYS: First currency in pair is the currency, that is received, second one is spent
-        SELLS: First currency in pair is the currency, that is spent, second one is received
         Fee is paid in currency one pays with (example: buy BTC with EUR, fee is paid in EUR)
         currency_spent = conversion_rate * currency_gained
         Be aware that prices are only up to 6 significant digits!
         :return:
         """
+        # Prepare the ledger files to extract the fee from it to join to the trades table
+        # The currency of the fee is the currency of the row in which the fee is stated (2 entries per trx)
+        ledger = self.deposits_input[self.deposits_input["type"] == "trade"]\
+                                    .drop(["balance", "aclass", "subtype"], axis=1).copy()
+
+        # Each trade entry is connected to two entries in the ledger (one entry for the currency received/spent each)
         self.trades_input["ledgers"] = self.trades_input["ledgers"].apply(lambda x: x.split(","))
         self.trades_input = self.trades_input.explode("ledgers")
-        self.trades_input = self.trades_input[["txid", "ordertxid", "pair", "time", "type", "ledgers",
-                                               "ordertype", "price", "cost", "fee", "vol", "margin"]]
-        self.trades_input = self.trades_input.merge(self.deposits_input, how="outer",
-                                                            left_on=["txid", "ledgers"],
-                                                            right_on=["refid", "txid"],
-                                                            suffixes=["", "_ledger"]
-                                       ).dropna()
-        # Here we join the fees with manually curated fee currencies from the ledger file
-        # All rows are duplicated (one line for the currency spent/received) and the line with the wrong fee is dropped
+        self.trades_input = self.trades_input[["txid", "ordertxid", "pair",
+                                               "time", "type", "ledgers",
+                                               "price", "cost", "fee",
+                                               "vol", "margin"
+                                               ]]
 
-        self.trades_input = self.trades_input[["txid", "ordertxid", "pair", "time", "type",
-                                                "ordertype", "price", "cost", "fee_ledger",
-                                                "vol", "margin", "fee_currency"]]
-        self.trades_input["fee_ledger"] *= -1
+        # Join the ledger entries to each trade
+        self.trades = self.trades_input.merge(ledger,
+                                              how="outer",
+                                              left_on=["txid", "ledgers"],
+                                              right_on=["refid", "txid"],
+                                              suffixes=["", "_ledger"]
+                                              )
+        # A row corresponds to the currency, that was received in a trade, if the amount is positive only
+        self.trades["received_flag"] = self.trades["amount"].apply(lambda amount: np.heaviside(amount, 0))
+        self.trades = self.trades.drop(["txid", "ordertxid",
+                                          "ledgers", "time_ledger",
+                                          "vol", "pair",
+                                          "fee", "cost"], axis=1)
+        assert (self.trades.groupby("refid")["received_flag"].sum() == 1.).all() == True, \
+                "Some trades have inconsistent trade amounts (plus and minus)!"
 
-        # Preprocessing of BUY entries
-        buys = self.trades_input[self.trades_input["type"] == "buy"].copy()
-        buys["currency_received"] = buys["pair"].apply(get_left_part_of_currency_pair)
-        buys["currency_spent"] = buys["pair"].apply(get_right_part_of_currency_pair)
-        buys.drop("pair", axis=1, inplace=True)
-        buys = buys.rename(columns={"time": "date",
-                                    "price": "conversion_rate_received_spent",
-                                    "cost": "amount_spent",
-                                    "fee_ledger": "fee",
-                                    "vol": "amount_received"
-                                    }
-                           )
 
-        # # Preprocessing of SELL entries
-        sells = self.trades_input[self.trades_input["type"] == "sell"].copy()
-        sells["currency_spent"] = sells["pair"].apply(get_left_part_of_currency_pair)
-        sells["currency_received"] = sells["pair"].apply(get_right_part_of_currency_pair)
-        sells.drop("pair", axis=1, inplace=True)
-        sells = sells.rename(columns={"time": "date",
-                                      "price": "conversion_rate_received_spent",
-                                      "cost": "amount_received",
-                                      "fee_ledger": "fee",
-                                      "vol": "amount_spent"
-                                      }
-                             )
-        ## To have same definition of the conversion rate as for the buys above
-        sells["conversion_rate_received_spent"] = 1. / sells["conversion_rate_received_spent"]
-
-        # Combine BUY and SELL into single table
-        self.trades = pd.concat([buys, sells], ignore_index=True)
-        self.trades["date"] = pd.to_datetime(self.trades["date"], format='%Y-%m-%d %H:%M:%S')
-        self.trades["date_string"] = self.trades["date"].dt.strftime('%Y-%m-%d')
+        self.trades = self.trades.drop("received_flag", axis=1).copy()
+        self.trades = self.trades.rename(columns={"txid_ledger": "txid",
+                                                  "refid": "ordertxid",
+                                                  "time": "date",
+                                                  "asset": "currency",
+                                                  "fee_ledger": "fee",
+                                                  "price": "conversion_rate_received_spent",
+                                                  "type": "ordertype",
+                                                  "type_ledger": "type"
+                                                  }
+                                         )
+        self.trades["fee"] *= -1
 
 
 

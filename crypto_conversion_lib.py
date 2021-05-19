@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
-
+import hashlib
 
 
 class Exchange():
@@ -20,12 +20,18 @@ class Exchange():
         assert type(self.trade_history) != None, "Combine deposits and trades first!"
         self.trade_history.to_csv(os.path.join(self.export_path, filename), sep=",")
 
-def drop_first_letter_currency(currency):
+def hash_transaction(row):
+    hash_object = hashlib.sha256(row.encode("utf-8")).hexdigest()[:30]
+    return(hash_object)
+
+def drop_first_letter_currency_rename_bitcoin(currency):
     if len(currency) == 4 and currency not in ["QTUM", "IOTA"]:
         # In case the currency is 4-digits long and is not QTUM drop the first X (no information)
         # Examples: XXRP -> XRP, XETH -> ETH
         # Exception for QTUM and IOTA is done for binance: there the dropping of the first letter is not needed
         currency = currency[1:]
+    if currency == "XBT":
+        currency = "BTC"
     return(currency)
 
 def get_left_part_of_currency_pair(pair):
@@ -36,7 +42,7 @@ def get_left_part_of_currency_pair(pair):
     else:
         # Split the pair in the middle of the string
         left = pair[:len(pair) // 2]
-        left = drop_first_letter_currency(left)
+        left = drop_first_letter_currency_rename_bitcoin(left)
     return(left)
 
 def get_right_part_of_currency_pair(pair):
@@ -47,8 +53,17 @@ def get_right_part_of_currency_pair(pair):
     else:
         # Split the pair in the middle of the string
         right = pair[len(pair) // 2:]
-        right = drop_first_letter_currency(right)
+        right = drop_first_letter_currency_rename_bitcoin(right)
     return(right)
+
+def split_currency_pair_to_list(pair):
+    if pair[:4] in ["QTUM", "IOTA"]:
+        pair_list = [pair[:4], pair[4:]]
+    else:
+        left = pair[:len(pair) // 2]
+        right = pair[len(pair) // 2:]
+        pair_list = [drop_first_letter_currency_rename_bitcoin(left), drop_first_letter_currency_rename_bitcoin(right)]
+    return(pair_list)
 
 def combine_file_content(raw_path, file_list):
     for idx, fname in enumerate(file_list):
@@ -58,6 +73,42 @@ def combine_file_content(raw_path, file_list):
             df = pd.read_csv(os.path.join(raw_path, fname))
             df_all = pd.concat([df_all, df], ignore_index=True)
     return(df_all)
+
+def drop_duplicate_fee_entries(df):
+    ## Drops duplicate fee entries in lines, where the currency is not the same as fee-currency (for consistency with kraken.com)
+    if df.currency != df.fee_currency:
+        df.fee = 0.
+    return(df)
+
+def convert_trade_table_schema(df, column_amount, column_amount_to_drop, receive_flag, exchange_type):
+    """
+    Converts the input table of trades into the final schema, that can be combined with deposits.
+    :param df: Input table of trades, define expected format!
+    :param column_amount: column name of the column containing the trade-amount
+    :param column_amount_to_drop: column name of the column NOT containing the trade-amount
+    :param receive_flag: if the data to be converted contains only rows indicating received currencies
+    :param exchange_type: either "binance" or "kucoin"
+    :return:
+    """
+
+    df = df.rename(columns={column_amount: "amount",
+                            "price": "conversion_rate_received_spent"
+                            }
+                   ).drop(column_amount_to_drop, axis=1)
+    df["type"] = df["type"].apply(lambda string: string.lower())
+    if exchange_type == "binance":
+        df["amount"] = df["amount"].str.replace(",", "").str.replace("[a-zA-Z]+", "")
+        df["fee_currency"] = df["fee"].str.extract("([a-zA-Z]+)")
+        df["fee"] = df["fee"].str.replace(",", "")\
+                                .str.replace("[a-zA-Z]+", "")\
+                                .astype(float)
+        if df["type"].all() == "sell":
+            df["conversion_rate_received_spent"] = 1./df["conversion_rate_received_spent"]
+    df = df.apply(drop_duplicate_fee_entries, axis=1)
+    df["margin"] = 0.
+    df["ordertype"] = "trade"
+    df["amount"] = df["amount"].astype(float)
+    return(df)
 
 class Kraken(Exchange):
     def __init__(self):
@@ -73,7 +124,7 @@ class Kraken(Exchange):
         self.deposits = self.deposits_input[self.deposits_input["type"] != "trade"].dropna().copy()
 
         self.deposits.drop(["subtype", "aclass", "balance"], axis=1, inplace=True)
-        self.deposits["asset"] = self.deposits["asset"].apply(drop_first_letter_currency)
+        self.deposits["asset"] = self.deposits["asset"].apply(drop_first_letter_currency_rename_bitcoin)
 
         self.deposits = self.deposits.rename(columns={"time": "date",
                                                       "refid": "ordertxid",
@@ -84,6 +135,9 @@ class Kraken(Exchange):
         self.deposits["margin"] = np.nan
         self.deposits["ordertype"] = np.nan
         self.deposits["fee"] *= -1
+        self.deposits["date"] = pd.to_datetime(self.deposits["date"], format='%Y-%m-%d %H:%M:%S')
+        self.deposits["date_string"] = self.deposits["date"].dt.strftime('%Y-%m-%d')
+        self.deposits["fee_currency"] = self.deposits["currency"]
 
 
     def convert_trades(self):
@@ -136,6 +190,10 @@ class Kraken(Exchange):
                                                   }
                                          )
         self.trades["fee"] *= -1
+        self.trades["date"] = pd.to_datetime(self.trades["date"], format='%Y-%m-%d %H:%M:%S')
+        self.trades["date_string"] = self.trades["date"].dt.strftime('%Y-%m-%d')
+        self.trades["fee_currency"] = self.trades["currency"]
+        self.trades["currency"] = self.trades["currency"].apply(drop_first_letter_currency_rename_bitcoin)
 
 
 
@@ -254,20 +312,18 @@ class Binance(Exchange):
     def convert_deposits(self):
         # TODO: Check for withdrawals!
         self.deposits = self.deposits_input.rename(columns={"Date(UTC)": "date",
-                                                                  "Coin": "currency_received",
-                                                                  "Amount": "amount_received",
+                                                                  "Coin": "currency",
+                                                                  "Amount": "amount",
                                                                   "TransactionFee": "fee",
                                                                   "TXID": "txid",
                                                                   "PaymentID": "ordertxid"}
                                                        ).drop(["Status", "SourceAddress", "Address"], axis=1)
         self.deposits["type"] = "deposit"
-        # self.deposits["balance"] = np.nan
-        # self.deposits["currency_spent"] = np.nan
-        # self.deposits["amount_spent"] = np.nan
-        # self.deposits["fee_currency"] = np.nan
         self.deposits["date"] = pd.to_datetime(self.deposits["date"], format='%Y-%m-%d %H:%M:%S')
         self.deposits["date_string"] = self.deposits["date"].dt.strftime('%Y-%m-%d')
         self.deposits["fee"] = self.deposits["fee"].astype(float)
+        self.deposits["margin"] = np.nan
+        self.deposits["ordertype"] = np.nan
         self.deposits["ordertxid"] = self.deposits["ordertxid"].astype(str)
 
     def convert_trades(self):
@@ -278,52 +334,89 @@ class Binance(Exchange):
         currency_spent = conversion_rate * currency_gained
         :return:
         """
-        buys = self.trades_input[self.trades_input["Side"] == "BUY"].copy()
-        buys["currency_received"] = buys["Pair"].apply(get_left_part_of_currency_pair)
-        buys["currency_spent"] = buys["Pair"].apply(get_right_part_of_currency_pair)
-        buys = buys.rename(columns={"Date(UTC)": "date",
-                                    "Side": "type",
-                                    "Amount": "amount_spent",
-                                    "Executed": "amount_received",
-                                    "Fee": "fee",
-                                    "Price": "conversion_rate_received_spent"
-                                    }).drop(["Pair"], axis=1)
-        buys["type"] = buys["type"].apply(lambda string: string.lower())
-        buys["amount_received"] = buys["amount_received"].str.replace(",", "").str.replace("[a-zA-Z]+", "")
-        buys["amount_spent"] = buys["amount_spent"].str.replace(",", "").str.replace("[a-zA-Z]+", "")
-        buys["fee_currency"] = buys["fee"].str.extract("([a-zA-Z]+)")
-        buys["fee"] = buys["fee"].str.replace(",", "").str.replace("[a-zA-Z]+", "")
-        buys["margin"] = 0.
-        buys["balance"] = np.nan
-        buys["txid"] = np.nan
-        buys["ordertxid"] = np.nan
-        buys["ordertype"] = "market"
+        def create_receive_flag(row):
+            ## BUY: the row where the currency is the same as the currency_executed
+            if row.type == "BUY":
+                if row.currency == row.currency_executed:
+                    return (1)
+                else:
+                    return (0)
+            elif row.type == "SELL":
+                if row.currency == row.currency_executed:
+                    return (0)
+                else:
+                    return (1)
+        # Create unique hash as txid for each transaction
+        self.trades_input["trx_data"] = self.trades_input[["Date(UTC)", "Pair", "Executed", "Amount", "Fee"]]\
+                                                            .apply(lambda x: str(list(x)), axis=1)
+        self.trades_input["txid"] = self.trades_input["trx_data"].apply(hash_transaction)
 
+        ## Split transaction on currency pair to get long-list format as for Kraken.com
+        self.trades_input["currency"] = self.trades_input["Pair"].apply(split_currency_pair_to_list)
+        self.trades_input = self.trades_input.explode("currency")
 
-        sells = self.trades_input[self.trades_input["Side"] == "SELL"].copy()
-        sells["currency_spent"] = sells["Pair"].apply(get_left_part_of_currency_pair)
-        sells["currency_received"] = sells["Pair"].apply(get_right_part_of_currency_pair)
-        sells = sells.rename(columns={"Date(UTC)": "date",
-                                      "Side": "type",
-                                      "Amount": "amount_received",
-                                      "Executed": "amount_spent",
-                                      "Fee": "fee",
-                                      "Price": "conversion_rate_received_spent"
-                                      }).drop(["Pair"], axis=1)
-        sells["conversion_rate_received_spent"] = 1. / sells["conversion_rate_received_spent"]
-        sells["type"] = sells["type"].apply(lambda string: string.lower())
-        sells["amount_received"] = sells["amount_received"].str.replace(",", "").str.replace("[a-zA-Z]+", "")
-        sells["amount_spent"] = sells["amount_spent"].str.replace(",", "").str.replace("[a-zA-Z]+", "")
-        sells["fee_currency"] = sells["fee"].str.extract("([a-zA-Z]+)")
-        sells["fee"] = sells["fee"].str.replace(",", "").str.replace("[a-zA-Z]+", "")
-        sells["margin"] = 0.
-        sells["balance"] = np.nan
-        sells["txid"] = np.nan
-        sells["ordertxid"] = np.nan
-        sells["ordertype"] = "market"
+        # Create unique hash as ordertxid for each part of the transaction
+        self.trades_input["trx_data"] = self.trades_input[["Date(UTC)", "Pair", "Executed", "Amount", "Fee", "currency"]]\
+                                                            .apply(lambda x: str(list(x)), axis=1)
+        self.trades_input["ordertxid"] = self.trades_input["trx_data"].apply(hash_transaction)
+
+        ## currency_executed is the currency occuring in the Executed column (SELL: spent, BUY: received)
+        self.trades_input = self.trades_input.rename(columns={"Date(UTC)": "date",
+                                                              "Side": "type",
+                                                              "Fee": "fee",
+                                                              "Side": "type",
+                                                              "Price": "price"
+                                                              }
+                                                     ).drop(["Pair", "trx_data"], axis=1)
+
+        buys = self.trades_input[self.trades_input["type"] == "BUY"].copy()
+        sells = self.trades_input[self.trades_input["type"] == "SELL"].copy()
+
+        for idx, data in enumerate([buys, sells]):
+            data["currency_executed"] = data["Executed"].str.extract("([A-Z]+)")
+            data["receive_flag"] = data.apply(create_receive_flag, axis=1)
+
+            received = data[data["receive_flag"] == 1].copy()
+            spent = data[data["receive_flag"] == 0].copy()
+
+            if idx == 0:
+                received = convert_trade_table_schema(received,
+                                                      column_amount="Executed",
+                                                      column_amount_to_drop="Amount",
+                                                      receive_flag = True,
+                                                      exchange_type="binance"
+                                                      )
+                spent = convert_trade_table_schema(spent,
+                                                   column_amount="Amount",
+                                                   column_amount_to_drop="Executed",
+                                                   receive_flag = False,
+                                                   exchange_type="binance"
+                                                   )
+                spent["amount"] *= -1
+                buys_final = pd.concat([received, spent], ignore_index=True, sort=False).drop(["currency_executed",
+                                                                                               "receive_flag"],
+                                                                                              axis=1)
+            elif idx == 1:
+                received = convert_trade_table_schema(received,
+                                                      column_amount="Amount",
+                                                      column_amount_to_drop="Executed",
+                                                      receive_flag=True,
+                                                      exchange_type="binance"
+                                                      )
+                spent = convert_trade_table_schema(spent,
+                                                   column_amount="Executed",
+                                                   column_amount_to_drop="Amount",
+                                                   receive_flag=False,
+                                                   exchange_type="binance"
+                                                   )
+                spent["amount"] *= -1
+                sells_final = pd.concat([received, spent], ignore_index=True, sort=False).drop(["currency_executed",
+                                                                                               "receive_flag"],
+                                                                                              axis=1)
+
 
         # Combine BUY and SELL into single table
-        self.trades = pd.concat([buys, sells], ignore_index=True)
+        self.trades = pd.concat([buys_final, sells_final], ignore_index=True, sort=False)
         self.trades["date"] = pd.to_datetime(self.trades["date"], format='%Y-%m-%d %H:%M:%S')
         self.trades["date_string"] = self.trades["date"].dt.strftime('%Y-%m-%d')
         self.trades["ordertxid"] = self.trades["ordertxid"].astype(str)

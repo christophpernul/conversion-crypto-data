@@ -230,8 +230,8 @@ class Kraken(Exchange):
         self.trades["fee"] *= -1
         self.trades["date"] = pd.to_datetime(self.trades["date"], format='%Y-%m-%d %H:%M:%S')
         self.trades["date_string"] = self.trades["date"].dt.strftime('%Y-%m-%d')
-        self.trades["fee_currency"] = self.trades["currency"]
         self.trades["currency"] = self.trades["currency"].apply(drop_first_letter_currency_rename_bitcoin)
+        self.trades["fee_currency"] = self.trades["currency"]
 
 
 

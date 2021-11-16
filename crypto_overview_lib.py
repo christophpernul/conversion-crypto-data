@@ -2,16 +2,16 @@ import os
 import pandas as pd
 
 def combine_exchange_data(path="/home/chris/Dropbox/Finance/data/crypto/exported"):
-    kraken = pd.read_csv(os.path.join(path, "kraken.csv"))
-    binance = pd.read_csv(os.path.join(path, "binance.csv"))
-    kucoin = pd.read_csv(os.path.join(path, "kucoin.csv"))
+    kraken = pd.read_csv(os.path.join(path, "kraken_orders.csv"))
+    binance = pd.read_csv(os.path.join(path, "binance_orders.csv"))
+    kucoin = pd.read_csv(os.path.join(path, "kucoin_orders.csv"))
 
     kraken["exchange"] = "kraken"
     binance["exchange"] = "binance"
     kucoin["exchange"] = "kucoin"
 
     df = pd.concat([kraken, binance, kucoin], ignore_index=True, sort=False)
-    df.drop(columns=["Unnamed: 0", "txid", "ordertxid", "margin", "ordertype"], inplace=True)
+    df.drop(columns=["txid", "ordertxid", "margin", "ordertype"], inplace=True)
 
     return(df.copy())
 
@@ -33,6 +33,11 @@ def prepare_coin_overview_table(crypto_trades):
 
     return(overview)
 
-df = combine_exchange_data()
+export_path = "/home/chris/Dropbox/Finance/data/crypto/exported"
+filename_output = "crypto_orders_longlist.csv"
+
+df = combine_exchange_data(export_path)
 
 out = prepare_coin_overview_table(df)
+
+out.to_csv(os.path.join(export_path, filename_output), index=False)

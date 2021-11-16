@@ -18,7 +18,7 @@ class Exchange():
         self.trade_history = pd.concat([self.deposits, self.trades], ignore_index=True)
     def save_trade_history(self, filename):
         assert type(self.trade_history) != None, "Combine deposits and trades first!"
-        self.trade_history.to_csv(os.path.join(self.export_path, filename), sep=",")
+        self.trade_history.to_csv(os.path.join(self.export_path, filename), sep=",", index=False)
 
 def hash_transaction(row):
     hash_object = hashlib.sha256(row.encode("utf-8")).hexdigest()[:30]
@@ -159,9 +159,9 @@ class Kraken(Exchange):
         self.deposits_input = combine_file_content(self.raw_path, file_list_deposits)
         self.trades_input = combine_file_content(self.raw_path, file_list_trades)
     def convert_deposits(self):
-        self.deposits = self.deposits_input[self.deposits_input["type"] != "trade"].dropna().copy()
+        self.deposits = self.deposits_input[self.deposits_input["type"] != "trade"].copy()
 
-        self.deposits.drop(["subtype", "aclass", "balance"], axis=1, inplace=True)
+        self.deposits = self.deposits.drop(["subtype", "aclass", "balance"], axis=1).dropna()
         self.deposits["asset"] = self.deposits["asset"].apply(drop_first_letter_currency_rename_bitcoin)
 
         self.deposits = self.deposits.rename(columns={"time": "date",

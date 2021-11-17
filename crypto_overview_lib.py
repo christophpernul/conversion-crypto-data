@@ -35,8 +35,10 @@ def prepare_coin_overview_table(crypto_trades):
 
 export_path = "/home/chris/Dropbox/Finance/data/crypto/exported"
 filename_output = "crypto_orders_longlist.csv"
+filename_orders = "crypto_orders.csv"
 
 df = combine_exchange_data(export_path)
+df.to_csv(os.path.join(export_path, filename_orders), index=False)
 
 out = prepare_coin_overview_table(df)
 

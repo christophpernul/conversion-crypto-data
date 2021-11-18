@@ -11,7 +11,7 @@ def combine_exchange_data(path="/home/chris/Dropbox/Finance/data/crypto/exported
     kucoin["exchange"] = "kucoin"
 
     df = pd.concat([kraken, binance, kucoin], ignore_index=True, sort=False)
-    df.drop(columns=["txid", "ordertxid", "margin", "ordertype"], inplace=True)
+    df.drop(columns=["margin", "ordertype"], inplace=True)
 
     return(df.copy())
 
